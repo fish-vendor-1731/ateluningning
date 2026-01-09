@@ -97,7 +97,7 @@ Repository: ${{ github.repository }}
 Author: ${{ github.actor }}
 Triggered by: ${{ github.event_name }}
 
-Auto-synced via GitHub Actions workflow"
+"Auto-synced via GitHub Actions workflow"
         
         # Commit changes
         git commit -m "$commit_msg"
