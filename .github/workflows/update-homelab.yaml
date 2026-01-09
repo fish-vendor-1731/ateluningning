@@ -130,7 +130,13 @@ jobs:
         
         echo "=== Changes to be committed ==="
         git diff --cached --name-status
-        
+
+        echo -e "\n=== Pulling latest changes from homelab ==="
+        git pull origin dev --rebase
+
+        # Re-stage changes after pull
+        git add apps/discord-bot/
+
         # Create commit message based on trigger type
         if [ "${{ steps.trigger-info.outputs.trigger_type }}" = "push" ]; then
           COMMIT_SHA="${{ github.sha }}"
@@ -143,15 +149,15 @@ jobs:
 
           COMMIT_MSG="sync: update bot from PR #${PR_NUMBER} - ${PR_TITLE}\n\nPR #${PR_NUMBER} merged by ${MERGED_BY}\nMerge commit: ${MERGE_COMMIT}\nAuto-synced via GitHub Actions"
         fi
-        
+
         echo -e "\n=== Commit message ==="
         echo "$COMMIT_MSG"
-        
+
         git commit -m "$COMMIT_MSG"
-        
+
         echo -e "\n=== Pushing to homelab dev branch ==="
         git push origin dev
-        
+
         echo "✅ Successfully synced changes to homelab!"
         echo "📦 The discord-bot-docker.yml workflow will now automatically:"
         echo "   1. Build new Docker image with timestamp tag"
