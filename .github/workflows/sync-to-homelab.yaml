@@ -52,6 +52,8 @@ jobs:
         token: ${{ secrets.HOMELAB_PAT }}
         path: bakuran-homelab
         ref: dev
+        # If HTTPS auth fails, try SSH instead by uncommenting below:
+        # ssh-key: ${{ secrets.DEPLOY_KEY }}
 
     - name: Sync bot code
       run: |
@@ -59,7 +61,7 @@ jobs:
         echo "Source commit: ${{ github.sha }}"
         
         # Copy all bot files to homelab directory
-        rsync -av --delete \
+        rsync -av --delete --ignore-missing-args \
           --exclude='.git' \
           --exclude='.github' \
           --exclude='node_modules' \
