@@ -1,0 +1,75 @@
+# Copy this file to: ateluningning/.github/workflows/sync-to-homelab.yaml
+name: Sync Bot Code to Homelab
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout ateluningning
+      uses: actions/checkout@v4
+
+    - name: Checkout bakuran-homelab
+      uses: actions/checkout@v4
+      with:
+        repository: fish-vendor-1731/bakuran-homelab
+        token: ${{ secrets.HOMELAB_PAT }}
+        path: bakuran-homelab
+        ref: dev
+
+    - name: Update bot source files
+      run: |
+        echo "Updating bot source files..."
+        
+        # List of files to update (only bot source code)
+        FILES="main.go go.mod go.sum README.md"
+        
+        for file in $FILES; do
+          if [ -f "$file" ] && [ -f "bakuran-homelab/apps/discord-bot/$file" ]; then
+            echo "Checking: $file"
+            if ! cmp -s "$file" "bakuran-homelab/apps/discord-bot/$file"; then
+              echo "  Updating: $file"
+              cp "$file" "bakuran-homelab/apps/discord-bot/$file"
+            else
+              echo "  No changes: $file"
+            fi
+          fi
+        done
+
+    - name: Commit if changes
+      run: |
+        cd bakuran-homelab
+        
+        git config user.name "GitHub Actions Bot"
+        git config user.email "actions@github.com"
+        
+        # Check if any of the source files changed
+        CHANGED=false
+        for file in main.go go.mod go.sum README.md; do
+          if git diff --quiet apps/discord-bot/$file 2>/dev/null; then
+            continue
+          else
+            CHANGED=true
+            git add apps/discord-bot/$file
+          fi
+        done
+        
+        if [ "$CHANGED" = false ]; then
+          echo "✅ No source code changes to commit"
+          exit 0
+        fi
+        
+        git commit -m "sync: update bot source code from ateluningning
+        
+        Source commit: ${{ github.sha }}
+        Auto-synced via GitHub Actions"
+        
+        git push origin dev
+        echo "✅ Source code updated and pushed"
