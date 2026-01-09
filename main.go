@@ -1158,7 +1158,7 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 	switch command {
 	case "hello":
-		SafeSend(s, m.ChannelID, fmt.Sprintf("%sHello there, my dear!!! %s is here to serve you some wisdom and good vibes. What can I get for you today? Try `!help` for the menu!", AteLuningningGreeting, AteLuningningName))
+		SafeSend(s, m.ChannelID, fmt.Sprintf("%sHello there, my dear! %s is here to serve you some wisdom and good vibes. What can I get for you today? Try `!help` for the menu!", AteLuningningGreeting, AteLuningningName))
 
 	case "ping":
 		latency := time.Since(m.Timestamp)
