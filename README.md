@@ -6,8 +6,8 @@ A friendly Filipino auntie Discord bot with AI capabilities powered by DeepSeek.
 
 ### AI Commands
 - `!askluningning <question>` - Ask Ate Luningning anything (one-time questions)
-- `!workstart` - Start a session-based chat (remembers conversation for 30 minutes)
-- `!workend` - End your current work session
+- `!chismis` - Start a session-based chat (remembers conversation for 30 minutes)
+- `!yokona` - End your current work session
 
 ### Other Commands
 - `!hello` - Get a warm greeting
@@ -26,11 +26,57 @@ A friendly Filipino auntie Discord bot with AI capabilities powered by DeepSeek.
 
 ## Session-Based Chat
 
-The `!workstart` command starts a session-based chat where:
+The `!chismis` command starts a session-based chat where:
 - The bot remembers your conversation context
 - You can just talk normally (no need for `!` commands)
 - Session automatically times out after 30 minutes of inactivity
-- Use `!workend` to manually end the session
+- Use `!yokona` to manually end the session
+
+## Long Message Handling
+
+Ate Luningning automatically handles long responses:
+
+1. **Short messages** (< 2000 chars): Sent normally
+2. **Moderate messages** (2000-6000 chars): Split into multiple Discord messages with proper rate limiting
+3. **Long messages** (> 6000 chars): Sent as `ateluningning_response.txt` file attachment
+
+### Rate Limit Protection
+When splitting messages, the bot adds delays between parts to avoid Discord's rate limits:
+- **200ms delay** before first part
+- **800ms delay** between subsequent parts
+- **Part numbering** ([Part 1/3], [Part 2/3], etc.) for clarity
+- **No more cut-off messages** - all parts are delivered successfully
+
+This ensures you always get the full response, even for very detailed answers!
+
+## Attachment Support
+
+Ate Luningning can now read and process `.txt` file attachments:
+
+### Supported Scenarios:
+1. **Session chat with attachments**: During `!chismis` sessions, upload `.txt` files for analysis
+2. **`!askluningning` with attachments**: Ask questions about file content: `!askluningning summarize this file` + attachment
+3. **File-only messages**: Send just a `.txt` file during a session for analysis
+
+### File Processing Details:
+- **File types**: Only `.txt` files are supported
+- **Size limits**: Max 10MB file size, 10,000 character content limit
+- **Security**: 30-second download timeout, proper User-Agent headers
+- **Error handling**: Clear error messages for unsupported files or download issues
+
+### Examples:
+```
+User: !chismis
+Bot: Started a work session! You can now chat normally...
+User: (uploads research.txt)
+Bot: (analyzes the research document and responds)
+```
+
+```
+User: !askluningning what are the key points in this document?
+User: (attaches document.txt)
+Bot: (reads the file and provides analysis)
+```
 
 ## Setup
 
@@ -56,9 +102,13 @@ The `!workstart` command starts a session-based chat where:
 ## Recent Updates
 
 - **Replaced Gemini with DeepSeek**: All AI features now use DeepSeek API
-- **Added session-based chat**: `!workstart` for conversations with memory
+- **Added session-based chat**: `!chismis` for conversations with memory
 - **30-minute timeout**: Sessions automatically clear after inactivity
 - **Context management**: Keeps last 20 messages for conversation continuity
 - **Improved timeout handling**: 60-second timeout with automatic retries (3 attempts)
 - **Better error messages**: User-friendly messages for timeout errors
 - **Typing indicators**: Shows "Ate Luningning is typing..." while processing responses
+- **Long message support**: Automatically splits long responses or sends as .txt files
+- **Improved logging**: Better message logging with no blank messages in logs
+- **Attachment support**: Bot can now read and process .txt file attachments
+- **Rate limit handling**: Fixed message cutoff issues with proper delays between split messages

@@ -35,7 +35,7 @@ const (
 	EnvFileName        = ".env"
 	DatabaseFile       = "./bot.db" // Database file name (for command locking)
 	AteLuningningAICommand = "askluningning" // Consistent name for the AI command
-	WorkStartCommand   = "workstart" // New command for session-based chat
+	WorkStartCommand   = "chismis" // New command for session-based chat
 	SessionTimeout     = 30 * time.Minute // 30 minutes timeout for sessions
 )
 
@@ -163,7 +163,7 @@ func loadConfiguration() (*AppConfig, error) {
 		return nil, fmt.Errorf("DISCORD_BOT_TOKEN is required in %s", EnvFileName)
 	}
 	if config.DeepSeekAPIKey == "" {
-		log.Printf("WARNING: DEEPSEEK_API_KEY is not set in %s. `!%s` and `!workstart` commands will not work.", EnvFileName, AteLuningningAICommand)
+		log.Printf("WARNING: DEEPSEEK_API_KEY is not set in %s. `!%s` and `!chismis` commands will not work.", EnvFileName, AteLuningningAICommand)
 	}
 
 	return config, nil
@@ -190,6 +190,18 @@ func readyHandler(s *discordgo.Session, event *discordgo.Ready) {
 
 // SafeSend sends a message to the specified channel with error handling
 func SafeSend(s *discordgo.Session, channelID, content string) {
+	if content == "" {
+		log.Printf("WARNING: Attempted to send empty message to channel %s", channelID)
+		return
+	}
+
+	// Log the message being sent (truncate if too long for logs)
+	logContent := content
+	if len(logContent) > 100 {
+		logContent = logContent[:100] + "..."
+	}
+	log.Printf("Sending message to channel %s: %s", channelID, logContent)
+
 	_, err := s.ChannelMessageSend(channelID, content)
 	if err != nil {
 		log.Printf("Error sending message to channel %s: %v", channelID, err)
@@ -198,6 +210,18 @@ func SafeSend(s *discordgo.Session, channelID, content string) {
 
 // SafeSendEmbed sends an embedded message with error handling
 func SafeSendEmbed(s *discordgo.Session, channelID string, embed *discordgo.MessageEmbed) {
+	if embed == nil {
+		log.Printf("WARNING: Attempted to send nil embed to channel %s", channelID)
+		return
+	}
+
+	// Log the embed being sent
+	embedTitle := "No title"
+	if embed.Title != "" {
+		embedTitle = embed.Title
+	}
+	log.Printf("Sending embed to channel %s: %s", channelID, embedTitle)
+
 	_, err := s.ChannelMessageSendEmbed(channelID, embed)
 	if err != nil {
 		log.Printf("Embed send error in channel %s: %v", channelID, err)
@@ -597,8 +621,37 @@ func (sm *SessionManager) CleanupInactiveSessions() {
 
 // handleSessionChat handles messages in an active session
 func handleSessionChat(s *discordgo.Session, m *discordgo.MessageCreate, session *Session) {
+	// Process message content and attachments
+	messageContent := m.Content
+	hasAttachments := len(m.Attachments) > 0
+
+	// If there are attachments, process them
+	if hasAttachments {
+		for _, attachment := range m.Attachments {
+			textContent, err := processAttachment(attachment)
+			if err != nil {
+				log.Printf("Error processing attachment %s: %v", attachment.Filename, err)
+				SafeSend(s, m.ChannelID, fmt.Sprintf("%sI couldn't read the file '%s'. Please make sure it's a .txt file!", AteLuningningErrorPrefix, attachment.Filename))
+				continue
+			}
+
+			// Add attachment content to message
+			if messageContent != "" {
+				messageContent += "\n\n[File: " + attachment.Filename + "]\n" + textContent
+			} else {
+				messageContent = "[File: " + attachment.Filename + "]\n" + textContent
+			}
+		}
+	}
+
+	// If there's no content at all (empty message with no processable attachments)
+	if messageContent == "" {
+		SafeSend(s, m.ChannelID, fmt.Sprintf("%sI see you sent something, but I couldn't find any text to process!", AteLuningningErrorPrefix))
+		return
+	}
+
 	// Add user message to session
-	sessionManager.AddMessage(m.Author.ID, m.ChannelID, "user", m.Content)
+	sessionManager.AddMessage(m.Author.ID, m.ChannelID, "user", messageContent)
 
 	// Start typing indicator in background that runs until we get a response
 	typingStop := make(chan bool)
@@ -620,7 +673,7 @@ func handleSessionChat(s *discordgo.Session, m *discordgo.MessageCreate, session
 	}()
 
 	// Get response from DeepSeek with session context
-	response, err := getDeepSeekResponseWithSession(m.Content, appConfig.DeepSeekAPIKey, DefaultDeepSeekModel, session)
+	response, err := getDeepSeekResponseWithSession(messageContent, appConfig.DeepSeekAPIKey, DefaultDeepSeekModel, session)
 
 	// Stop the typing indicator
 	typingStop <- true
@@ -640,18 +693,181 @@ func handleSessionChat(s *discordgo.Session, m *discordgo.MessageCreate, session
 	// Add assistant response to session
 	sessionManager.AddMessage(m.Author.ID, m.ChannelID, "assistant", response)
 
-	// Send response (split if too long)
-	if len(response) > 2000 {
-		SafeSend(s, m.ChannelID, fmt.Sprintf("%s\n%s", AteLuningningGreeting, response[:2000]))
-		for i := 2000; i < len(response); i += 2000 {
-			end := i + 2000
-			if end > len(response) {
-				end = len(response)
+	// Send response (handle long messages)
+	sendLongMessage(s, m.ChannelID, response, AteLuningningGreeting)
+}
+
+// processAttachment downloads and reads text from a Discord attachment
+func processAttachment(attachment *discordgo.MessageAttachment) (string, error) {
+	// Only process text files for now
+	filename := strings.ToLower(attachment.Filename)
+	if !strings.HasSuffix(filename, ".txt") {
+		return "", fmt.Errorf("only .txt files are supported, got: %s", attachment.Filename)
+	}
+
+	log.Printf("Processing attachment: %s (URL: %s, Size: %d bytes)",
+		attachment.Filename, attachment.URL, attachment.Size)
+
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+	}
+
+	// Download the file from Discord's CDN
+	req, err := http.NewRequest("GET", attachment.URL, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
+
+	// Add user agent to avoid being blocked
+	req.Header.Set("User-Agent", "DiscordBot (https://github.com/bwmarrin/discordgo, v0.27.1)")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to download attachment: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to download attachment: HTTP %d", resp.StatusCode)
+	}
+
+	// Read the content with size limit (10MB max for safety)
+	maxSize := int64(10 * 1024 * 1024) // 10MB
+	limitedReader := io.LimitReader(resp.Body, maxSize)
+
+	content, err := io.ReadAll(limitedReader)
+	if err != nil {
+		return "", fmt.Errorf("failed to read attachment content: %v", err)
+	}
+
+	// Convert to string and trim
+	textContent := strings.TrimSpace(string(content))
+
+	// Log success
+	log.Printf("Successfully processed attachment %s: %d characters", attachment.Filename, len(textContent))
+
+	// Check if content is too large for processing
+	if len(textContent) > 10000 {
+		textContent = textContent[:10000] + "\n\n[File truncated - too large for processing]"
+	}
+
+	return textContent, nil
+}
+
+// sendLongMessage handles sending messages that might exceed Discord's limits
+// It splits long messages or creates .txt files for very long content
+func sendLongMessage(s *discordgo.Session, channelID, content, prefix string) {
+	// Discord message limit is 2000 characters
+	const discordLimit = 2000
+	// If content is very long (more than 3 messages worth), create a .txt file
+	const txtFileThreshold = 3 * discordLimit // 6000 characters
+
+	if len(content) <= discordLimit {
+		// Short message, send normally
+		if prefix != "" {
+			SafeSend(s, channelID, fmt.Sprintf("%s\n%s", prefix, content))
+		} else {
+			// Use default prefix if none provided
+			SafeSend(s, channelID, fmt.Sprintf("Ate Luningning says:\n%s", content))
+		}
+		return
+	}
+
+	if len(content) <= txtFileThreshold {
+		// Moderately long message, split into multiple messages
+		// Send initial notification message
+		time.Sleep(200 * time.Millisecond)
+		if prefix != "" {
+			SafeSend(s, channelID, fmt.Sprintf("%s (This is a long response, splitting it up!)", prefix))
+		} else {
+			SafeSend(s, channelID, "Ate Luningning's response (splitting into parts)")
+		}
+
+		// Split content into chunks that fit within Discord's limit
+		// Account for part numbering prefix (e.g., "[Part 1/3]\n" = ~12 chars)
+		const partPrefixOverhead = 15 // Safe estimate for "[Part X/XX]\n"
+		maxContentPerPart := discordLimit - partPrefixOverhead
+
+		// Calculate total parts
+		totalParts := (len(content) + maxContentPerPart - 1) / maxContentPerPart
+
+		// Send parts
+		for partNum := 1; partNum <= totalParts; partNum++ {
+			// Add delay between messages (except before first part)
+			if partNum > 1 {
+				time.Sleep(800 * time.Millisecond)
 			}
-			SafeSend(s, m.ChannelID, response[i:end])
+
+			// Calculate start and end indices
+			start := (partNum - 1) * maxContentPerPart
+			end := start + maxContentPerPart
+			if end > len(content) {
+				end = len(content)
+			}
+
+			// Create part with numbering
+			partText := fmt.Sprintf("[Part %d/%d]\n%s", partNum, totalParts, content[start:end])
+
+			// Double-check we're under limit (should be, but just in case)
+			if len(partText) > discordLimit {
+				// Trim if somehow over limit
+				partText = partText[:discordLimit]
+			}
+
+			SafeSend(s, channelID, partText)
 		}
 	} else {
-		SafeSend(s, m.ChannelID, fmt.Sprintf("%s\n%s", AteLuningningGreeting, response))
+		// Very long message, create a .txt file
+		// Create a temporary file
+		tmpFile, err := os.CreateTemp("", "ateluningning_*.txt")
+		if err != nil {
+			log.Printf("Error creating temp file for long message: %v", err)
+			// Fall back to splitting
+			sendLongMessage(s, channelID, content, prefix+" (Couldn't create file, splitting instead)")
+			return
+		}
+		defer os.Remove(tmpFile.Name()) // Clean up temp file
+
+		// Write content to file
+		_, err = tmpFile.WriteString(content)
+		if err != nil {
+			log.Printf("Error writing to temp file: %v", err)
+			tmpFile.Close()
+			// Fall back to splitting
+			sendLongMessage(s, channelID, content, prefix+" (Couldn't write to file, splitting instead)")
+			return
+		}
+		tmpFile.Close()
+
+		// Read the file back for sending
+		fileBytes, err := os.ReadFile(tmpFile.Name())
+		if err != nil {
+			log.Printf("Error reading temp file: %v", err)
+			// Fall back to splitting
+			sendLongMessage(s, channelID, content, prefix+" (Couldn't read file, splitting instead)")
+			return
+		}
+
+		// Create message with file attachment
+		message := fmt.Sprintf("%s (This response is very long, so I've attached it as a file!)", prefix)
+		if message == " (This response is very long, so I've attached it as a file!)" {
+			message = "Ate Luningning's response is very long, so I've attached it as a file!"
+		}
+		SafeSend(s, channelID, message)
+
+		// Send the file
+		log.Printf("Sending file attachment to channel %s: ateluningning_response.txt (%d bytes)", channelID, len(fileBytes))
+		_, err = s.ChannelFileSend(channelID, "ateluningning_response.txt", bytes.NewReader(fileBytes))
+		if err != nil {
+			log.Printf("Error sending file: %v", err)
+			// Fall back to splitting with warning
+			SafeSend(s, channelID, "Oh dear! I couldn't send the file. Let me try splitting the message instead...")
+			sendLongMessage(s, channelID, content, "Here's the response (split into parts):")
+		} else {
+			log.Printf("File sent successfully to channel %s", channelID)
+		}
 	}
 }
 
@@ -833,16 +1049,47 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		return
 	}
 
-	log.Printf("Message received in channel %s from %s: %s", m.ChannelID, m.Author.Username, m.Content)
+	// Log incoming message and attachments
+	logContent := m.Content
+	hasAttachments := len(m.Attachments) > 0
+
+	// Build log message
+	logMsg := fmt.Sprintf("Message received in channel %s from %s (ID: %s)", m.ChannelID, m.Author.Username, m.Author.ID)
+
+	if logContent != "" {
+		if len(logContent) > 100 {
+			logContent = logContent[:100] + "..."
+		}
+		logMsg += fmt.Sprintf(": %s", logContent)
+	}
+
+	if hasAttachments {
+		attachmentNames := []string{}
+		for _, att := range m.Attachments {
+			attachmentNames = append(attachmentNames, att.Filename)
+		}
+		logMsg += fmt.Sprintf(" [Attachments: %s]", strings.Join(attachmentNames, ", "))
+	}
+
+	log.Printf(logMsg)
 
 	// Check if user has an active session (for session-based chat without ! prefix)
+	// Also check for attachments even without text
+	hasActiveSession := false
+	var activeSession *Session
+	if session, exists := sessionManager.GetSession(m.Author.ID, m.ChannelID); exists {
+		hasActiveSession = true
+		activeSession = session
+	}
+
+	// Handle session chat (with or without text, but with possible attachments)
+	if hasActiveSession && (!strings.HasPrefix(m.Content, Prefix) || len(m.Attachments) > 0) {
+		handleSessionChat(s, m, activeSession)
+		return
+	}
+
+	// If no active session and no command prefix, ignore
 	if !strings.HasPrefix(m.Content, Prefix) {
-		// Check for active session
-		if session, exists := sessionManager.GetSession(m.Author.ID, m.ChannelID); exists {
-			// Handle session-based chat
-			handleSessionChat(s, m, session)
-			return
-		}
 		return
 	}
 
@@ -871,8 +1118,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 		targetCommand := strings.ToLower(args[0])
 
-		if targetCommand != AteLuningningAICommand && targetCommand != "horoscope" && targetCommand != WorkStartCommand {
-			SafeSend(s, m.ChannelID, fmt.Sprintf("%sI can only %s the `!%s`, `!horoscope`, or `!%s` commands for now, dear.", AteLuningningErrorPrefix, command, AteLuningningAICommand, WorkStartCommand))
+		if targetCommand != AteLuningningAICommand && targetCommand != "horoscope" && targetCommand != WorkStartCommand && targetCommand != "yokona" {
+			SafeSend(s, m.ChannelID, fmt.Sprintf("%sI can only %s the `!%s`, `!horoscope`, `!%s`, or `!yokona` commands for now, dear.", AteLuningningErrorPrefix, command, AteLuningningAICommand, WorkStartCommand))
 			return
 		}
 
@@ -894,8 +1141,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 	// --- End Admin Commands ---
 
 	// --- Check for locked commands before proceeding ---
-	// Apply lock check for !horoscope, !askluningning, and !workstart
-	if command == "horoscope" || command == AteLuningningAICommand || command == WorkStartCommand {
+	// Apply lock check for !horoscope, !askluningning, !chismis, and !yokona
+	if command == "horoscope" || command == AteLuningningAICommand || command == WorkStartCommand || command == "yokona" {
 		isLocked, checkErr := isCommandLocked(command, m.ChannelID) // Use a new variable for `err` here to avoid shadowing outside `if`
 		if checkErr != nil {
 			log.Printf("Database error checking %s lock status: %v", command, checkErr)
@@ -988,11 +1235,39 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			SafeSend(s, m.ChannelID, AteLuningningErrorPrefix + "My smart brain isn't fully connected right now. Please tell my programmer to set the `DEEPSEEK_API_KEY`!")
 			return
 		}
-		if len(args) == 0 {
-			SafeSend(s, m.ChannelID, fmt.Sprintf("%sWhat do you want to ask my smart brain, dear? Just type `!%s <your question here>`.", AteLuningningGreeting, AteLuningningAICommand))
+
+		// Process message content and attachments
+		prompt := strings.Join(args, " ")
+		hasAttachments := len(m.Attachments) > 0
+
+		// If there are attachments, process them
+		if hasAttachments {
+			for _, attachment := range m.Attachments {
+				textContent, err := processAttachment(attachment)
+				if err != nil {
+					log.Printf("Error processing attachment %s: %v", attachment.Filename, err)
+					SafeSend(s, m.ChannelID, fmt.Sprintf("%sI couldn't read the file '%s'. Please make sure it's a .txt file!", AteLuningningErrorPrefix, attachment.Filename))
+					continue
+				}
+
+				// Add attachment content to prompt
+				if prompt != "" {
+					prompt += "\n\n[File: " + attachment.Filename + "]\n" + textContent
+				} else {
+					prompt = "[File: " + attachment.Filename + "]\n" + textContent
+				}
+			}
+		}
+
+		// Check if we have any content to process
+		if prompt == "" && !hasAttachments {
+			SafeSend(s, m.ChannelID, fmt.Sprintf("%sWhat do you want to ask my smart brain, dear? Just type `!%s <your question here>` or attach a .txt file!", AteLuningningGreeting, AteLuningningAICommand))
 			return
 		}
-		prompt := strings.Join(args, " ")
+
+		if prompt == "" && hasAttachments {
+			prompt = "Please analyze the content of the attached file(s)."
+		}
 
 		SafeSend(s, m.ChannelID, fmt.Sprintf("%sAte Luningning is consulting the magic crystal ball for you! Give me a moment while I prepare your answer...", AteLuningningGreeting))
 
@@ -1032,18 +1307,8 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 			return
 		}
 
-		if len(deepSeekResponse) > 2000 {
-			SafeSend(s, m.ChannelID, fmt.Sprintf("Here's what the cosmos revealed for you, my dear (it's a lot, so I'm splitting it up!):\n%s", deepSeekResponse[:2000]))
-			for i := 2000; i < len(deepSeekResponse); i += 2000 {
-				end := i + 2000
-				if end > len(deepSeekResponse) {
-					end = len(deepSeekResponse)
-				}
-				SafeSend(s, m.ChannelID, deepSeekResponse[i:end])
-			}
-		} else {
-			SafeSend(s, m.ChannelID, fmt.Sprintf("Here's what the cosmos revealed for you, my dear: \n%s", deepSeekResponse))
-		}
+		// Handle long messages - split or create .txt file
+		sendLongMessage(s, m.ChannelID, deepSeekResponse, "Here's what the cosmos revealed for you, my dear:")
 
 	case WorkStartCommand: // Command for session-based chat
 		if appConfig.DeepSeekAPIKey == "" {
@@ -1060,16 +1325,16 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 
 		// Start new session
 		_ = sessionManager.StartSession(m.Author.ID, m.ChannelID)
-		SafeSend(s, m.ChannelID, fmt.Sprintf("%sWork session started! I'll remember our conversation for the next 30 minutes. Just talk to me normally (no need for !commands). Type `!workend` to end the session early.", AteLuningningGreeting))
+		SafeSend(s, m.ChannelID, fmt.Sprintf("%sWork session started! I'll remember our conversation for the next 30 minutes. Just talk to me normally (no need for !commands). Type `!yokona` to end the session early.", AteLuningningGreeting))
 
 		// Add initial system message
 		sessionManager.AddMessage(m.Author.ID, m.ChannelID, "system", "You are Ate Luningning, a friendly and helpful Filipino auntie who gives advice with warmth and humor. You're having a conversation with someone who started a work session with you.")
 
-	case "workend": // Command to end session
+	case "yokona": // Command to end session
 		if sessionManager.EndSession(m.Author.ID, m.ChannelID) {
-			SafeSend(s, m.ChannelID, fmt.Sprintf("%sWork session ended! Our conversation has been cleared. Start a new one with `!workstart` whenever you're ready, my dear!", AteLuningningGreeting))
+			SafeSend(s, m.ChannelID, fmt.Sprintf("%sWork session ended! Our conversation has been cleared. Start a new one with `!chismis` whenever you're ready, my dear!", AteLuningningGreeting))
 		} else {
-			SafeSend(s, m.ChannelID, fmt.Sprintf("%sYou don't have an active work session to end, dear. Start one with `!workstart`!", AteLuningningGreeting))
+			SafeSend(s, m.ChannelID, fmt.Sprintf("%sYou don't have an active work session to end, dear. Start one with `!chismis`!", AteLuningningGreeting))
 		}
 
 	case "help":
@@ -1109,12 +1374,12 @@ func messageCreate(s *discordgo.Session, m *discordgo.MessageCreate) {
 					Inline: false,
 				},
 				{
-					Name:   "`!workstart`",
+					Name:   "`!chismis`",
 					Value:  "Start a session-based chat with Ate Luningning! I'll remember our conversation for 30 minutes. Just talk to me normally after starting.",
 					Inline: false,
 				},
 				{
-					Name:   "`!workend`",
+					Name:   "`!yokona`",
 					Value:  "End your current work session and clear the conversation history.",
 					Inline: false,
 				},
