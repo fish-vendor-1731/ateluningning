@@ -88,17 +88,10 @@ jobs:
         
         # Stage changes
         git add apps/discord-bot/
-        
-        # Create commit message
-        commit_msg="sync: update Discord bot from ateluningning
 
-Source commit: ${{ github.sha }}
-Repository: ${{ github.repository }}
-Author: ${{ github.actor }}
-Triggered by: ${{ github.event_name }}
+        # Create commit message - simplified to avoid YAML parsing issues
+        commit_msg="sync: update Discord bot from ateluningning\n\nSource commit: ${{ github.sha }}\nRepository: ${{ github.repository }}\nAuthor: ${{ github.actor }}\nTriggered by: ${{ github.event_name }}\n\nAuto-synced via GitHub Actions workflow"
 
-"Auto-synced via GitHub Actions workflow"
-        
         # Commit changes
         git commit -m "$commit_msg"
         
