@@ -13,10 +13,7 @@ on:
 jobs:
   sync:
     # For PR events, only run if PR was merged (not just closed)
-    if: |
-      github.event_name == 'push' || 
-      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
-    
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -137,27 +134,14 @@ jobs:
         # Create commit message based on trigger type
         if [ "${{ steps.trigger-info.outputs.trigger_type }}" = "push" ]; then
           COMMIT_SHA="${{ github.sha }}"
-          COMMIT_MSG="sync: update bot source code from ateluningning
-
-Source commit: ${COMMIT_SHA}
-Auto-synced via GitHub Actions
-
-Changes:
-$(git diff --cached --name-status | sed 's/^/  /')"
+          COMMIT_MSG="sync: update bot source code from ateluningning\n\nSource commit: ${COMMIT_SHA}\nAuto-synced via GitHub Actions"
         else
           PR_TITLE="${{ github.event.pull_request.title }}"
           PR_NUMBER="${{ github.event.pull_request.number }}"
           MERGE_COMMIT="${{ github.event.pull_request.merge_commit_sha }}"
           MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
-          
-          COMMIT_MSG="sync: update bot from PR #${PR_NUMBER} - ${PR_TITLE}
 
-PR #${PR_NUMBER} merged by ${MERGED_BY}
-Merge commit: ${MERGE_COMMIT}
-Auto-synced via GitHub Actions
-
-Changes:
-$(git diff --cached --name-status | sed 's/^/  /')"
+          COMMIT_MSG="sync: update bot from PR #${PR_NUMBER} - ${PR_TITLE}\n\nPR #${PR_NUMBER} merged by ${MERGED_BY}\nMerge commit: ${MERGE_COMMIT}\nAuto-synced via GitHub Actions"
         fi
         
         echo -e "\n=== Commit message ==="
