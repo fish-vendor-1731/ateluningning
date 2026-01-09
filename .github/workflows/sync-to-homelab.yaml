@@ -1,0 +1,127 @@
+# Copy this file to: ateluningning/.github/workflows/sync-to-homelab.yaml
+name: Sync to Homelab Repository
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+env:
+  # PAT key for authentication with homelab repository
+  HOMELAB_PAT: ${{ secrets.HOMELAB_PAT }}
+  # GitHub token for general operations
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  # Source repository information
+  SOURCE_REPO: ${{ github.repository }}
+  SOURCE_SHA: ${{ github.sha }}
+  SOURCE_ACTOR: ${{ github.actor }}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Checkout ateluningning
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+
+    - name: Verify PAT is available
+      run: |
+        if [ -z "${{ secrets.HOMELAB_PAT }}" ]; then
+          echo "❌ ERROR: HOMELAB_PAT secret is not set in repository secrets"
+          echo "Please add a Personal Access Token with repository write permissions to your repository secrets."
+          echo "Go to: Settings → Secrets and variables → Actions → New repository secret"
+          echo "Name: HOMELAB_PAT"
+          echo "Value: Your GitHub Personal Access Token"
+          exit 1
+        else
+          echo "✅ PAT is available (masked for security)"
+          echo "Source repository: ${{ github.repository }}"
+          echo "Target repository: fish-vendor-1731/bakuran-homelab"
+        fi
+
+    - name: Checkout bakuran-homelab
+      uses: actions/checkout@v4
+      with:
+        repository: fish-vendor-1731/bakuran-homelab
+        token: ${{ secrets.HOMELAB_PAT }}
+        path: bakuran-homelab
+        ref: dev
+
+    - name: Sync bot code
+      run: |
+        echo "Syncing bot code from ${{ github.repository }} to homelab..."
+        echo "Source commit: ${{ github.sha }}"
+        
+        # Copy all bot files to homelab directory
+        rsync -av --delete \
+          --exclude='.git' \
+          --exclude='.github' \
+          --exclude='node_modules' \
+          --exclude='*.db' \
+          --exclude='.env*' \
+          --exclude='*.log' \
+          ./ bakuran-homelab/apps/discord-bot/
+        
+        echo "Sync completed successfully"
+
+    - name: Commit and push sync
+      run: |
+        cd bakuran-homelab
+        
+        # Configure git user
+        git config user.name "GitHub Actions Bot"
+        git config user.email "actions@github.com"
+        
+        # Show git status for debugging
+        echo "Git status before commit:"
+        git status --short
+        
+        # Check if there are changes
+        if git diff --quiet; then
+          echo "✅ No changes to commit - bot code is already up to date"
+          exit 0
+        fi
+        
+        # Stage changes
+        git add apps/discord-bot/
+        
+        # Create commit message
+        commit_msg="sync: update Discord bot from ateluningning
+
+Source commit: ${{ github.sha }}
+Repository: ${{ github.repository }}
+Author: ${{ github.actor }}
+Triggered by: ${{ github.event_name }}
+
+Auto-synced via GitHub Actions workflow"
+        
+        # Commit changes
+        git commit -m "$commit_msg"
+        
+        # Push to dev branch
+        echo "Pushing changes to dev branch..."
+        git push origin dev
+        
+        echo "✅ Sync completed and pushed successfully"
+
+    - name: Create sync summary
+      if: always()
+      run: |
+        echo "## Sync Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Source Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Source Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+        echo "**Target Repository:** fish-vendor-1731/bakuran-homelab" >> $GITHUB_STEP_SUMMARY
+        echo "**Target Branch:** dev" >> $GITHUB_STEP_SUMMARY
+        echo "**Triggered by:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [ "${{ job.status }}" = "success" ]; then
+          echo "✅ **Status:** Sync completed successfully" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ **Status:** Sync failed" >> $GITHUB_STEP_SUMMARY
+        fi
