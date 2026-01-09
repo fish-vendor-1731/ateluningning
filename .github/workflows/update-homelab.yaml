@@ -1,0 +1,52 @@
+name: Update Homelab Deployment
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  update-homelab:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+    - name: Checkout ateluningning
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    
+    - name: Get latest commit SHA
+      id: get-sha
+      run: echo "sha_short=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
+    
+    - name: Checkout bakuran-homelab
+      uses: actions/checkout@v4
+      with:
+        repository: fish-vendor-1731/bakuran-homelab
+        token: ${{ secrets.HOMELAB_PAT }}
+        path: bakuran-homelab
+    
+    - name: Update image tag in kustomization
+      run: |
+        cd bakuran-homelab
+        # Update the image tag to use commit SHA
+        sed -i "s|newTag: dev|newTag: ${{ steps.get-sha.outputs.sha_short }}|" flux/apps/discord-bot/kustomization.yaml
+        
+        # Also update deployment annotation if needed
+        sed -i "s|image:.*discord-bot:dev|image: ghcr.io/fish-vendor-1731/bakuran-homelab/discord-bot:${{ steps.get-sha.outputs.sha_short }}|" flux/apps/discord-bot/deployment.yaml
+    
+    - name: Commit and push changes
+      run: |
+        cd bakuran-homelab
+        git config user.name "GitHub Actions Bot"
+        git config user.email "actions@github.com"
+        git add flux/apps/discord-bot/
+        git commit -m "chore: update Discord bot image to ${{ steps.get-sha.outputs.sha_short }}
+        
+        Auto-updated from ateluningning commit: ${{ github.sha }}
+        Repository: ${{ github.repository }}
+        Triggered by: ${{ github.actor }}"
+        git push origin dev
