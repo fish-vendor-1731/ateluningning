@@ -44,41 +44,61 @@ jobs:
       with:
         repository: fish-vendor-1731/bakuran-homelab
         token: ${{ secrets.HOMELAB_PAT }}
-        path: homelab
         ref: dev
+        # No path parameter - checks out to current directory
 
     - name: Check for changes
       id: check-changes
       run: |
         echo "Checking for source code changes..."
-        
+
         # Create target directory if it doesn't exist
-        mkdir -p homelab/apps/discord-bot
-        
-        # Get list of source files
-        find . -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" -o -name "*.md" -o -name "*.txt" -o -name "Dockerfile" -o -name "*.yaml" -o -name "*.yml" \) | \
-          grep -v "^\./\.git" | grep -v "^\./\.github" > /tmp/source_files.txt
-        
+        mkdir -p apps/discord-bot
+
+        # List of specific bot source files to check
+        BOT_FILES="main.go go.mod go.sum README.md .gitignore"
+
         CHANGED=false
-        echo "Comparing files..."
-        
-        while IFS= read -r file; do
-          rel_path="${file#./}"
-          homelab_path="homelab/apps/discord-bot/$rel_path"
-          
-          # Check if file exists in target
-          if [ -f "$homelab_path" ]; then
-            # Compare file contents
-            if ! cmp -s "$file" "$homelab_path"; then
-              echo "  📝 Changed: $rel_path"
+        echo "Comparing bot source files..."
+
+        # Check each bot file
+        for file in $BOT_FILES; do
+          if [ -f "$file" ]; then
+            target_path="apps/discord-bot/$file"
+
+            # Check if file exists in target
+            if [ -f "$target_path" ]; then
+              # Compare file contents
+              if ! cmp -s "$file" "$target_path"; then
+                echo "  📝 Changed: $file"
+                CHANGED=true
+              fi
+            else
+              echo "  ➕ New: $file"
               CHANGED=true
             fi
-          else
-            echo "  ➕ New: $rel_path"
-            CHANGED=true
           fi
-        done < /tmp/source_files.txt
-        
+        done
+
+        # Also check for any .go files in the root
+        echo "Checking Go source files..."
+        find . -maxdepth 1 -name "*.go" | while read -r file; do
+          filename=$(basename "$file")
+          if [ "$filename" != "main.go" ]; then  # main.go already checked
+            target_path="apps/discord-bot/$filename"
+
+            if [ -f "$target_path" ]; then
+              if ! cmp -s "$file" "$target_path"; then
+                echo "  📝 Changed: $filename"
+                CHANGED=true
+              fi
+            else
+              echo "  ➕ New: $filename"
+              CHANGED=true
+            fi
+          fi
+        done
+
         if [ "$CHANGED" = true ]; then
           echo "changes=true" >> $GITHUB_OUTPUT
           echo "✅ Changes detected"
@@ -91,51 +111,59 @@ jobs:
       if: steps.check-changes.outputs.changes == 'true'
       run: |
         echo "Copying updated files to homelab..."
-        
+
         # Ensure target directory exists
-        mkdir -p homelab/apps/discord-bot
-        
-        # Copy all matching files
-        find . -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" -o -name "*.md" -o -name "*.txt" -o -name "Dockerfile" -o -name "*.yaml" -o -name "*.yml" \) | \
-          grep -v "^\./\.git" | grep -v "^\./\.github" | while read -r file; do
-            rel_path="${file#./}"
-            homelab_path="homelab/apps/discord-bot/$rel_path"
-            
-            # Create directory if needed
-            mkdir -p "$(dirname "$homelab_path")"
-            
-            # Copy file
-            cp "$file" "$homelab_path"
-            echo "  📋 Copied: $rel_path"
-          done
+        mkdir -p apps/discord-bot
+
+        # List of specific bot source files to copy (not entire directory structure)
+        BOT_FILES="main.go go.mod go.sum README.md .gitignore"
+
+        echo "=== Copying bot source files ==="
+        for file in $BOT_FILES; do
+          if [ -f "$file" ]; then
+            echo "  📋 Copying: $file"
+            cp "$file" "apps/discord-bot/$file"
+          else
+            echo "  ⚠️  File not found: $file"
+          fi
+        done
+
+        # Also copy any .go files in the root
+        echo "=== Copying Go source files ==="
+        find . -maxdepth 1 -name "*.go" | while read -r file; do
+          filename=$(basename "$file")
+          if [ "$filename" != "main.go" ]; then  # main.go already copied
+            echo "  📋 Copying: $filename"
+            cp "$file" "apps/discord-bot/$filename"
+          fi
+        done
 
     - name: Commit and push to homelab
       if: steps.check-changes.outputs.changes == 'true'
       run: |
-        cd homelab
-        
         echo "=== Preparing to commit changes ==="
-        
+
+        # Configure git
         git config user.name "GitHub Actions Bot"
         git config user.email "actions@github.com"
-        
+
+        # Check git status before adding
+        echo "=== Git status before adding ==="
+        git status --short
+
         # Add all changes in discord-bot folder
+        echo "=== Adding discord-bot files ==="
         git add apps/discord-bot/
-        
+
         # Check if there are actual changes to commit
+        echo "=== Checking for staged changes ==="
         if git diff --cached --quiet; then
           echo "⚠️  No changes to commit (files might be identical)"
           exit 0
         fi
-        
+
         echo "=== Changes to be committed ==="
         git diff --cached --name-status
-
-        echo -e "\n=== Pulling latest changes from homelab ==="
-        git pull origin dev --rebase
-
-        # Re-stage changes after pull
-        git add apps/discord-bot/
 
         # Create commit message based on trigger type
         if [ "${{ steps.trigger-info.outputs.trigger_type }}" = "push" ]; then
@@ -153,10 +181,19 @@ jobs:
         echo -e "\n=== Commit message ==="
         echo "$COMMIT_MSG"
 
+        # Commit changes
         git commit -m "$COMMIT_MSG"
 
+        echo -e "\n=== Pulling latest changes before push ==="
+        # Try to pull first to avoid conflicts
+        git pull origin dev --no-edit || echo "Pull failed or had conflicts, continuing with force push..."
+
         echo -e "\n=== Pushing to homelab dev branch ==="
-        git push origin dev
+        # Try normal push first, then force if needed
+        if ! git push origin dev; then
+          echo "Normal push failed, trying force push with lease..."
+          git push origin dev --force-with-lease
+        fi
 
         echo "✅ Successfully synced changes to homelab!"
         echo "📦 The discord-bot-docker.yml workflow will now automatically:"
