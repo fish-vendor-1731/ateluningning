@@ -1,0 +1,186 @@
+name: Sync Bot Code to Homelab
+
+on:
+  # Trigger on push to main (direct commits)
+  push:
+    branches: [ main ]
+  
+  # Trigger when PR is merged
+  pull_request:
+    branches: [ main ]
+    types: [closed]
+
+jobs:
+  sync:
+    # For PR events, only run if PR was merged (not just closed)
+    if: |
+      github.event_name == 'push' || 
+      (github.event_name == 'pull_request' && github.event.pull_request.merged == true)
+    
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - name: Determine trigger type
+      id: trigger-info
+      run: |
+        if [ "${{ github.event_name }}" = "push" ]; then
+          echo "Trigger: Direct push to main"
+          echo "Commit: ${{ github.sha }}"
+          echo "trigger_type=push" >> $GITHUB_OUTPUT
+        else
+          echo "Trigger: PR #${{ github.event.pull_request.number }} merged"
+          echo "Merge commit: ${{ github.event.pull_request.merge_commit_sha }}"
+          echo "Merged by: ${{ github.event.pull_request.merged_by.login }}"
+          echo "trigger_type=pr_merge" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Checkout ateluningning
+      uses: actions/checkout@v4
+      with:
+        ref: main  # Always checkout main branch
+        fetch-depth: 0
+
+    - name: Checkout bakuran-homelab
+      uses: actions/checkout@v4
+      with:
+        repository: fish-vendor-1731/bakuran-homelab
+        token: ${{ secrets.HOMELAB_PAT }}
+        path: homelab
+        ref: dev
+
+    - name: Check for changes
+      id: check-changes
+      run: |
+        echo "Checking for source code changes..."
+        
+        # Create target directory if it doesn't exist
+        mkdir -p homelab/apps/discord-bot
+        
+        # Get list of source files
+        find . -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" -o -name "*.md" -o -name "*.txt" -o -name "Dockerfile" -o -name "*.yaml" -o -name "*.yml" \) | \
+          grep -v "^\./\.git" | grep -v "^\./\.github" > /tmp/source_files.txt
+        
+        CHANGED=false
+        echo "Comparing files..."
+        
+        while IFS= read -r file; do
+          rel_path="${file#./}"
+          homelab_path="homelab/apps/discord-bot/$rel_path"
+          
+          # Check if file exists in target
+          if [ -f "$homelab_path" ]; then
+            # Compare file contents
+            if ! cmp -s "$file" "$homelab_path"; then
+              echo "  📝 Changed: $rel_path"
+              CHANGED=true
+            fi
+          else
+            echo "  ➕ New: $rel_path"
+            CHANGED=true
+          fi
+        done < /tmp/source_files.txt
+        
+        if [ "$CHANGED" = true ]; then
+          echo "changes=true" >> $GITHUB_OUTPUT
+          echo "✅ Changes detected"
+        else
+          echo "changes=false" >> $GITHUB_OUTPUT
+          echo "✅ No changes detected"
+        fi
+
+    - name: Copy files if changed
+      if: steps.check-changes.outputs.changes == 'true'
+      run: |
+        echo "Copying updated files to homelab..."
+        
+        # Ensure target directory exists
+        mkdir -p homelab/apps/discord-bot
+        
+        # Copy all matching files
+        find . -type f \( -name "*.go" -o -name "go.mod" -o -name "go.sum" -o -name "*.md" -o -name "*.txt" -o -name "Dockerfile" -o -name "*.yaml" -o -name "*.yml" \) | \
+          grep -v "^\./\.git" | grep -v "^\./\.github" | while read -r file; do
+            rel_path="${file#./}"
+            homelab_path="homelab/apps/discord-bot/$rel_path"
+            
+            # Create directory if needed
+            mkdir -p "$(dirname "$homelab_path")"
+            
+            # Copy file
+            cp "$file" "$homelab_path"
+            echo "  📋 Copied: $rel_path"
+          done
+
+    - name: Commit and push to homelab
+      if: steps.check-changes.outputs.changes == 'true'
+      run: |
+        cd homelab
+        
+        echo "=== Preparing to commit changes ==="
+        
+        git config user.name "GitHub Actions Bot"
+        git config user.email "actions@github.com"
+        
+        # Add all changes in discord-bot folder
+        git add apps/discord-bot/
+        
+        # Check if there are actual changes to commit
+        if git diff --cached --quiet; then
+          echo "⚠️  No changes to commit (files might be identical)"
+          exit 0
+        fi
+        
+        echo "=== Changes to be committed ==="
+        git diff --cached --name-status
+        
+        # Create commit message based on trigger type
+        if [ "${{ steps.trigger-info.outputs.trigger_type }}" = "push" ]; then
+          COMMIT_SHA="${{ github.sha }}"
+          COMMIT_MSG="sync: update bot source code from ateluningning
+
+Source commit: ${COMMIT_SHA}
+Auto-synced via GitHub Actions
+
+Changes:
+$(git diff --cached --name-status | sed 's/^/  /')"
+        else
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          MERGE_COMMIT="${{ github.event.pull_request.merge_commit_sha }}"
+          MERGED_BY="${{ github.event.pull_request.merged_by.login }}"
+          
+          COMMIT_MSG="sync: update bot from PR #${PR_NUMBER} - ${PR_TITLE}
+
+PR #${PR_NUMBER} merged by ${MERGED_BY}
+Merge commit: ${MERGE_COMMIT}
+Auto-synced via GitHub Actions
+
+Changes:
+$(git diff --cached --name-status | sed 's/^/  /')"
+        fi
+        
+        echo -e "\n=== Commit message ==="
+        echo "$COMMIT_MSG"
+        
+        git commit -m "$COMMIT_MSG"
+        
+        echo -e "\n=== Pushing to homelab dev branch ==="
+        git push origin dev
+        
+        echo "✅ Successfully synced changes to homelab!"
+        echo "📦 The discord-bot-docker.yml workflow will now automatically:"
+        echo "   1. Build new Docker image with timestamp tag"
+        echo "   2. Update deployment.yaml with new image tag"
+        echo "   3. Flux will detect change and update deployment"
+        echo "   4. New Discord bot pod will be created"
+
+    - name: No changes needed
+      if: steps.check-changes.outputs.changes == 'false'
+      run: |
+        echo "✅ No changes detected."
+        if [ "${{ steps.trigger-info.outputs.trigger_type }}" = "push" ]; then
+          echo "Source commit: ${{ github.sha }}"
+        else
+          echo "PR #${{ github.event.pull_request.number }} was merged but no source code changes were found."
+        fi
