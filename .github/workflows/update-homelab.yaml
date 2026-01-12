@@ -45,7 +45,7 @@ jobs:
         repository: fish-vendor-1731/bakuran-homelab
         token: ${{ secrets.HOMELAB_PAT }}
         ref: dev
-        # No path parameter - checks out to current directory
+        path: ./homelab
 
     - name: Check for changes
       id: check-changes
@@ -53,7 +53,7 @@ jobs:
         echo "Checking for source code changes..."
 
         # Create target directory if it doesn't exist
-        mkdir -p apps/discord-bot
+        mkdir -p homelab/apps/discord-bot
 
         # List of specific bot source files to check
         BOT_FILES="main.go go.mod go.sum README.md .gitignore"
@@ -64,7 +64,7 @@ jobs:
         # Check each bot file
         for file in $BOT_FILES; do
           if [ -f "$file" ]; then
-            target_path="apps/discord-bot/$file"
+            target_path="homelab/apps/discord-bot/$file"
 
             # Check if file exists in target
             if [ -f "$target_path" ]; then
@@ -85,7 +85,7 @@ jobs:
         find . -maxdepth 1 -name "*.go" | while read -r file; do
           filename=$(basename "$file")
           if [ "$filename" != "main.go" ]; then  # main.go already checked
-            target_path="apps/discord-bot/$filename"
+            target_path="homelab/apps/discord-bot/$filename"
 
             if [ -f "$target_path" ]; then
               if ! cmp -s "$file" "$target_path"; then
@@ -113,7 +113,7 @@ jobs:
         echo "Copying updated files to homelab..."
 
         # Ensure target directory exists
-        mkdir -p apps/discord-bot
+        mkdir -p homelab/apps/discord-bot
 
         # List of specific bot source files to copy (not entire directory structure)
         BOT_FILES="main.go go.mod go.sum README.md .gitignore"
@@ -122,7 +122,7 @@ jobs:
         for file in $BOT_FILES; do
           if [ -f "$file" ]; then
             echo "  📋 Copying: $file"
-            cp "$file" "apps/discord-bot/$file"
+            cp "$file" "homelab/apps/discord-bot/$file"
           else
             echo "  ⚠️  File not found: $file"
           fi
@@ -134,7 +134,7 @@ jobs:
           filename=$(basename "$file")
           if [ "$filename" != "main.go" ]; then  # main.go already copied
             echo "  📋 Copying: $filename"
-            cp "$file" "apps/discord-bot/$filename"
+            cp "$file" "homelab/apps/discord-bot/$filename"
           fi
         done
 
@@ -142,6 +142,7 @@ jobs:
       if: steps.check-changes.outputs.changes == 'true'
       run: |
         echo "=== Preparing to commit changes ==="
+        cd homelab
 
         # Configure git
         git config user.name "GitHub Actions Bot"
