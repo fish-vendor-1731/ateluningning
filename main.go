@@ -72,7 +72,7 @@ var sessionManager *SessionManager
 // --- Ate Luningning Persona Constants ---
 const (
 	AteLuningningName        = "Ate Luningning"
-	AteLuningningGreeting    = "Oh, hello there, my dear! Ate Luningning is here. "
+	AteLuningningGreeting    = "Oh, hello there, my dear!! Ate Luningning is here. "
 	AteLuningningErrorPrefix = "Oh dear, something went wrong in Ate Luningning's kitchen! "
 )
 
